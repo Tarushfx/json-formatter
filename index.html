@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JSON Formatter</title>
+<style>
+  :root { --bg:#fff; --panel:#f6f7f9; --fg:#1a1a1a; --muted:#666; --border:#d0d0d0; --accent:#2563eb; --err:#b91c1c; --ok:#15803d;
+    --obj:#2563eb; --arr:#9333ea; --str:#15803d; --num:#c2410c; --bool:#be185d; --nul:#6b7280; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181d; --panel:#1e2128; --fg:#e8e8e8; --muted:#9aa0a6; --border:#383c44; --accent:#60a5fa; --err:#f87171; --ok:#4ade80;
+      --obj:#60a5fa; --arr:#c084fc; --str:#4ade80; --num:#fb923c; --bool:#f472b6; --nul:#9ca3af; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0; }
+  textarea { width:100%; height:100%; min-height:300px; background:var(--bg); color:var(--fg); border:1px solid var(--border);
+    border-radius:6px; padding:10px; font:13px ui-monospace, Menlo, monospace; resize:vertical; }
+  button, input, select { font:inherit; padding:6px 12px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--fg); }
+  button { cursor:pointer; }
+  button.primary, button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #stats { color:var(--muted); min-height:1.4em; }
+  #status.err { color:var(--err); } #status.ok { color:var(--ok); }
+  #files { color:var(--muted); font-size:13px; }
+  #files a { color:var(--accent); cursor:pointer; margin-right:10px; }
+  .tabs { display:flex; gap:4px; margin-top:8px; }
+  .view { height:58vh; border:1px solid var(--border); border-radius:6px; overflow:auto; background:var(--panel); display:none; }
+  .view.on { display:block; }
+  #textView { background:none; border:none; overflow:visible; }
+  /* tree */
+  #treeView { padding:10px; font:13px ui-monospace, Menlo, monospace; }
+  #treeView details > summary { cursor:pointer; list-style:none; }
+  #treeView details > summary::before { content:"▸ "; color:var(--muted); }
+  #treeView details[open] > summary::before { content:"▾ "; }
+  #treeView .kids { margin-left:18px; border-left:1px dotted var(--border); padding-left:8px; }
+  #treeView .leaf { padding-left:14px; }
+  .k { color:var(--fg); font-weight:600; } .cnt { color:var(--muted); }
+  .t-string{color:var(--str)} .t-number{color:var(--num)} .t-boolean{color:var(--bool)} .t-null{color:var(--nul)}
+  /* graph */
+  #graphView { position:relative; overflow:hidden; cursor:grab; }
+  #graphView.drag { cursor:grabbing; }
+  #graphView svg { width:100%; height:100%; display:block; }
+  .gtools { position:absolute; top:8px; right:8px; display:flex; gap:4px; z-index:1; }
+  .gtools button { padding:3px 9px; }
+  .edge { fill:none; stroke:var(--border); stroke-width:1.5; }
+  .node rect { fill:var(--bg); stroke-width:1.5; rx:6; }
+  .node.object rect { stroke:var(--obj); } .node.array rect { stroke:var(--arr); }
+  .node.string rect { stroke:var(--str); } .node.number rect { stroke:var(--num); }
+  .node.boolean rect { stroke:var(--bool); } .node.null rect { stroke:var(--nul); }
+  .node text { fill:var(--fg); font:12px ui-monospace, Menlo, monospace; pointer-events:none; }
+  .node.collapsed rect { fill:var(--panel); stroke-dasharray:4 2; }
+  .node { cursor:pointer; }
+  #pathBar { color:var(--muted); font:12px ui-monospace, Menlo, monospace; min-height:1.4em; }
+</style>
+</head>
+<body>
+<h1>JSON Formatter</h1>
+
+<div class="tabs">
+  <button class="active" data-view="text">Text</button>
+  <button data-view="tree">Tree</button>
+  <button data-view="graph">Graph</button>
+</div>
+
+<div class="row" style="margin-top:8px">
+  <button class="primary" id="format">Format</button>
+  <button id="minify">Minify</button>
+  <button id="copy">Copy</button>
+  <label>Indent
+    <select id="indent"><option value="2">2</option><option value="4">4</option><option value="tab">Tab</option></select>
+  </label>
+  <span id="status"></span>
+</div>
+
+<div id="textView" class="view on"><textarea id="input" placeholder="Paste JSON here…" spellcheck="false"></textarea></div>
+<div id="treeView" class="view"></div>
+<div id="graphView" class="view">
+  <div class="gtools">
+    <button id="expandAll">Expand all</button>
+    <button id="collapseAll">Collapse all</button>
+    <button id="fit">Fit</button>
+  </div>
+  <svg id="svg"><g id="vp"></g></svg>
+</div>
+<div id="pathBar"></div>
+<div id="stats"></div>
+
+<div class="row">
+  <input id="name" placeholder="file name (e.g. data)" size="24">
+  <button id="save">Save to folder</button>
+  <span id="dir" style="color:var(--muted);font-size:13px"></span>
+</div>
+<div id="files"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const input = $("input"), status = $("status");
+let currentView = "text";
+
+function indentVal() { const v = $("indent").value; return v === "tab" ? "\t" : +v; }
+function setStatus(msg, cls) { status.textContent = msg; status.className = cls || ""; }
+function kindOf(v) { return v === null ? "null" : Array.isArray(v) ? "array" : typeof v; }
+function describe(v) {
+  if (Array.isArray(v)) return `array, ${v.length} item${v.length === 1 ? "" : "s"}`;
+  if (v && typeof v === "object") { const n = Object.keys(v).length; return `object, ${n} key${n === 1 ? "" : "s"}`; }
+  return typeof v;
+}
+function parse() {
+  try { return JSON.parse(input.value); }
+  catch (e) { setStatus("Invalid JSON: " + e.message, "err"); $("stats").textContent = ""; return undefined; }
+}
+function updateStats(value, text) {
+  const bytes = new TextEncoder().encode(text).length;
+  $("stats").textContent = `Top level: ${describe(value)} · ${text.length.toLocaleString()} chars · ${bytes.toLocaleString()} bytes · ${text.split("\n").length.toLocaleString()} lines`;
+}
+function run(minify) {
+  const v = parse(); if (v === undefined) return;
+  const out = minify ? JSON.stringify(v) : JSON.stringify(v, null, indentVal());
+  input.value = out; updateStats(v, out); setStatus("Valid JSON", "ok");
+  renderCurrent();
+}
+
+/* ---------- tabs ---------- */
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+  currentView = b.dataset.view;
+  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
+  ["text", "tree", "graph"].forEach((n) => $(n + "View").classList.toggle("on", n === currentView));
+  renderCurrent();
+});
+function renderCurrent() {
+  if (currentView === "text") return;
+  const v = parse(); if (v === undefined) return;
+  setStatus("Valid JSON", "ok"); updateStats(v, input.value);
+  if (currentView === "tree") renderTree(v); else renderGraph(v);
+}
+
+/* ---------- tree view ---------- */
+function leafHTML(v) {
+  const k = kindOf(v);
+  return `<span class="t-${k}">${esc(k === "string" ? JSON.stringify(v) : String(v))}</span>`;
+}
+function esc(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function treeNode(key, v, depth) {
+  const k = kindOf(v), label = key === null ? "" : `<span class="k">${esc(String(key))}</span>: `;
+  if (k !== "object" && k !== "array") {
+    const d = document.createElement("div"); d.className = "leaf"; d.innerHTML = label + leafHTML(v); return d;
+  }
+  const entries = k === "array" ? v.map((x, i) => [i, x]) : Object.entries(v);
+  const d = document.createElement("details"); d.open = depth < 2;
+  const s = document.createElement("summary");
+  s.innerHTML = label + `<span class="cnt">${k === "array" ? `[${entries.length}]` : `{${entries.length}}`}</span>`;
+  d.appendChild(s);
+  const kids = document.createElement("div"); kids.className = "kids";
+  let filled = false;
+  const fill = () => { if (filled) return; filled = true; entries.forEach(([ck, cv]) => kids.appendChild(treeNode(ck, cv, depth + 1))); };
+  if (d.open) fill();
+  d.addEventListener("toggle", () => { if (d.open) fill(); });
+  d.appendChild(kids); return d;
+}
+function renderTree(v) { const t = $("treeView"); t.innerHTML = ""; t.appendChild(treeNode(null, v, 0)); }
+
+/* ---------- graph view ---------- */
+const NW = 190, NH = 26, XGAP = 70, YGAP = 10, SVGNS = "http://www.w3.org/2000/svg";
+let graphRoot = null, tf = { x: 20, y: 20, k: 1 };
+
+function buildGraph(key, v, path, depth) {
+  const k = kindOf(v), n = { key, kind: k, path, children: [], collapsed: false, value: v };
+  if (k === "object" || k === "array") {
+    const entries = k === "array" ? v.map((x, i) => [i, x]) : Object.entries(v);
+    n.count = entries.length;
+    n.children = entries.map(([ck, cv]) => buildGraph(ck, cv, k === "array" ? `${path}[${ck}]` : `${path}.${ck}`, depth + 1));
+  }
+  return n;
+}
+function countNodes(n) { return 1 + n.children.reduce((a, c) => a + countNodes(c), 0); }
+function collapseDeep(n, depth, max) { n.collapsed = depth >= max && n.children.length > 0; n.children.forEach((c) => collapseDeep(c, depth + 1, max)); }
+function setAll(n, collapsed) { n.collapsed = collapsed && n.children.length > 0; n.children.forEach((c) => setAll(c, collapsed)); }
+
+function layout(n, depth, st) {
+  n.x = depth * (NW + XGAP);
+  const kids = n.collapsed ? [] : n.children;
+  if (!kids.length) { n.y = st.y; st.y += NH + YGAP; }
+  else { kids.forEach((c) => layout(c, depth + 1, st)); n.y = (kids[0].y + kids[kids.length - 1].y) / 2; }
+}
+function nodeLabel(n) {
+  const key = n.key === null ? "root" : String(n.key);
+  let s;
+  if (n.kind === "object") s = `${key} {${n.count}}`;
+  else if (n.kind === "array") s = `${key} [${n.count}]`;
+  else s = `${key}: ${n.kind === "string" ? JSON.stringify(n.value) : String(n.value)}`;
+  const max = 28; return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+function el(name, attrs) { const e = document.createElementNS(SVGNS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+function drawGraph() {
+  const vp = $("vp"); vp.innerHTML = "";
+  const st = { y: 0 }; layout(graphRoot, 0, st);
+  const edges = el("g", {}), nodes = el("g", {});
+  (function walk(n) {
+    const kids = n.collapsed ? [] : n.children;
+    kids.forEach((c) => {
+      const x1 = n.x + NW, y1 = n.y + NH / 2, x2 = c.x, y2 = c.y + NH / 2, mx = (x1 + x2) / 2;
+      edges.appendChild(el("path", { class: "edge", d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}` }));
+      walk(c);
+    });
+    const g = el("g", { class: `node ${n.kind}${n.collapsed ? " collapsed" : ""}`, transform: `translate(${n.x},${n.y})` });
+    g.appendChild(el("rect", { width: NW, height: NH }));
+    const t = el("text", { x: 8, y: NH / 2 + 4 }); t.textContent = nodeLabel(n) + (n.collapsed ? "  ＋" : "");
+    g.appendChild(t);
+    g.addEventListener("mouseenter", () => $("pathBar").textContent = n.path || "$");
+    g.addEventListener("click", (e) => { if (dragMoved) return; if (n.children.length) { n.collapsed = !n.collapsed; drawGraph(); } });
+    nodes.appendChild(g);
+  })(graphRoot);
+  vp.append(edges, nodes); applyTf();
+}
+function applyTf() { $("vp").setAttribute("transform", `translate(${tf.x},${tf.y}) scale(${tf.k})`); }
+function fitGraph() {
+  const b = $("vp").getBBox(), r = $("svg").getBoundingClientRect();
+  if (!b.width) return;
+  tf.k = Math.min(1.2, (r.width - 40) / b.width, (r.height - 40) / b.height);
+  tf.x = 20 - b.x * tf.k; tf.y = 20 - b.y * tf.k; applyTf();
+}
+function renderGraph(v) {
+  graphRoot = buildGraph(null, v, "$", 0);
+  const total = countNodes(graphRoot);
+  collapseDeep(graphRoot, 0, total > 400 ? 2 : 99);
+  drawGraph(); fitGraph();
+  $("pathBar").textContent = `${total.toLocaleString()} nodes — click a node to collapse/expand, drag to pan, scroll to zoom`;
+}
+$("expandAll").onclick = () => { if (graphRoot) { setAll(graphRoot, false); drawGraph(); fitGraph(); } };
+$("collapseAll").onclick = () => { if (graphRoot) { setAll(graphRoot, true); graphRoot.collapsed = false; drawGraph(); fitGraph(); } };
+$("fit").onclick = fitGraph;
+
+/* pan + zoom */
+let dragging = false, dragMoved = false, last = null;
+const gv = $("graphView");
+gv.addEventListener("mousedown", (e) => { if (e.target.closest(".gtools")) return; dragging = true; dragMoved = false; last = [e.clientX, e.clientY]; gv.classList.add("drag"); });
+window.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - last[0], dy = e.clientY - last[1];
+  if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved = true;
+  tf.x += dx; tf.y += dy; last = [e.clientX, e.clientY]; applyTf();
+});
+window.addEventListener("mouseup", () => { dragging = false; gv.classList.remove("drag"); setTimeout(() => dragMoved = false, 0); });
+gv.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const r = $("svg").getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const f = e.deltaY < 0 ? 1.12 : 1 / 1.12, nk = Math.min(4, Math.max(0.05, tf.k * f));
+  tf.x = mx - (mx - tf.x) * (nk / tf.k); tf.y = my - (my - tf.y) * (nk / tf.k); tf.k = nk; applyTf();
+}, { passive: false });
+
+/* ---------- buttons + server ---------- */
+$("format").onclick = () => run(false);
+$("minify").onclick = () => run(true);
+$("copy").onclick = async () => { await navigator.clipboard.writeText(input.value); setStatus("Copied", "ok"); };
+input.addEventListener("input", () => { $("pathBar").textContent = ""; });
+
+async function loadFiles() {
+  const files = await (await fetch("/api/files")).json();
+  $("files").innerHTML = files.length ? "Saved: " : "";
+  files.forEach((f) => {
+    const a = document.createElement("a"); a.textContent = f;
+    a.onclick = async () => { input.value = await (await fetch("/api/files/" + encodeURIComponent(f))).text(); $("name").value = f; run(false); };
+    $("files").appendChild(a);
+  });
+}
+$("save").onclick = async () => {
+  const v = parse(); if (v === undefined) return;
+  const name = $("name").value.trim();
+  if (!name) return setStatus("Enter a file name", "err");
+  const content = JSON.stringify(v, null, indentVal());
+  const r = await fetch("/api/save", { method: "POST", body: JSON.stringify({ name, content }) });
+  const j = await r.json();
+  if (r.ok) { setStatus("Saved " + j.saved, "ok"); loadFiles(); } else setStatus(j.error, "err");
+};
+fetch("/api/info").then((r) => r.json()).then((i) => $("dir").textContent = "→ " + i.dir);
+loadFiles();
+</script>
+</body>
+</html>

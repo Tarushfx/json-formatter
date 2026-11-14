@@ -1,0 +1,19 @@
+{
+  "name": "json-formatter-local",
+  "version": "0.1.0",
+  "description": "Local JSON formatter with tree and graph views. Saves files to a folder on your machine.",
+  "bin": {
+    "json-formatter": "server.js"
+  },
+  "files": [
+    "server.js",
+    "index.html"
+  ],
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT"
+}
