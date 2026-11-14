@@ -22,8 +22,18 @@
   button.primary, button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   #stats { color:var(--muted); min-height:1.4em; }
   #status.err { color:var(--err); } #status.ok { color:var(--ok); }
-  #files { color:var(--muted); font-size:13px; }
-  #files a { color:var(--accent); cursor:pointer; margin-right:10px; }
+  .filesPanel { border:1px solid var(--border); border-radius:6px; background:var(--panel); margin-top:8px; }
+  .filesHead { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--border); }
+  .filesHead input { padding:3px 8px; }
+  #files { max-height:240px; overflow:auto; font-size:13px; }
+  .frow { display:flex; align-items:center; gap:10px; padding:6px 10px; cursor:pointer; border-bottom:1px solid var(--border); }
+  .frow:last-child { border-bottom:none; }
+  .frow:hover { background:var(--border); }
+  .frow.active { box-shadow:inset 3px 0 0 var(--accent); background:var(--bg); }
+  .frow .fname { flex:1; font-family:ui-monospace, Menlo, monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .frow .fmeta { color:var(--muted); white-space:nowrap; font-size:12px; }
+  .frow .fdel { padding:1px 8px; color:var(--err); }
+  .fempty { padding:14px 10px; color:var(--muted); }
   .tabs { display:flex; gap:4px; margin-top:8px; }
   .view { height:58vh; border:1px solid var(--border); border-radius:6px; overflow:auto; background:var(--panel); display:none; }
   .view.on { display:block; }
@@ -107,6 +117,16 @@
   <select id="recent" title="Recent folders" style="display:none"></select>
 </div>
 
+<dialog id="ask">
+  <div id="askTitle" style="font-weight:600;margin-bottom:6px"></div>
+  <div id="askText" style="white-space:pre-wrap;margin-bottom:8px"></div>
+  <input id="askInput" style="display:none;width:100%;margin-bottom:8px">
+  <div class="row" style="justify-content:flex-end">
+    <button id="askCancel">Cancel</button>
+    <button id="askOk" class="primary">OK</button>
+  </div>
+</dialog>
+
 <dialog id="picker">
   <div style="font-weight:600;margin-bottom:6px">Choose save folder</div>
   <div class="row" style="margin:4px 0">
@@ -121,7 +141,13 @@
   </div>
   <div id="pkErr" style="color:var(--err);min-height:1.2em"></div>
 </dialog>
-<div id="files"></div>
+<div class="filesPanel">
+  <div class="filesHead">
+    <strong>Saved files <span id="fileCount" class="cnt"></span></strong>
+    <input id="fileFilter" placeholder="Filter…" size="16">
+  </div>
+  <div id="files"></div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -298,24 +324,87 @@ $("minify").onclick = () => run(true);
 $("copy").onclick = async () => { await navigator.clipboard.writeText(input.value); setStatus("Copied", "ok"); };
 input.addEventListener("input", () => { $("pathBar").textContent = ""; });
 
-async function loadFiles() {
-  const files = await (await fetch("/api/files")).json();
-  $("files").innerHTML = files.length ? "Saved: " : "";
-  files.forEach((f) => {
-    const a = document.createElement("a"); a.textContent = f;
-    a.onclick = async () => { input.value = await (await fetch("/api/files/" + encodeURIComponent(f))).text(); $("name").value = f; run(false); };
-    $("files").appendChild(a);
+/* in-page confirm/prompt (native confirm() can be blocked in embedded browsers) */
+function ask({ title, text = "", ok = "OK", cancel = "Cancel", input = null, danger = false }) {
+  return new Promise((resolve) => {
+    const dlg = $("ask"), inp = $("askInput");
+    $("askTitle").textContent = title; $("askText").textContent = text;
+    $("askOk").textContent = ok; $("askCancel").textContent = cancel;
+    $("askOk").style.background = danger ? "var(--err)" : ""; $("askOk").style.borderColor = danger ? "var(--err)" : "";
+    inp.style.display = input === null ? "none" : ""; inp.value = input || "";
+    const done = (val) => { dlg.close(); $("askOk").onclick = $("askCancel").onclick = null; dlg.onclose = null; resolve(val); };
+    $("askOk").onclick = () => done(input === null ? true : inp.value.trim() || false);
+    $("askCancel").onclick = () => done(false);
+    dlg.oncancel = (e) => { e.preventDefault(); done(false); };
+    inp.onkeydown = (e) => { if (e.key === "Enter") $("askOk").click(); };
+    dlg.showModal(); (input === null ? $("askCancel") : inp).focus();
   });
 }
-$("save").onclick = async () => {
+
+let filesCache = [], loadedName = null;
+function fmtSize(b) { return b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB"; }
+function fmtAgo(ms) {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + " min ago";
+  if (s < 86400) return Math.floor(s / 3600) + " h ago";
+  if (s < 86400 * 30) return Math.floor(s / 86400) + " d ago";
+  return new Date(ms).toLocaleDateString();
+}
+async function loadFiles() { filesCache = await (await fetch("/api/files")).json(); renderFiles(); }
+function renderFiles() {
+  const q = $("fileFilter").value.trim().toLowerCase();
+  const list = filesCache.filter((f) => f.name.toLowerCase().includes(q));
+  $("fileCount").textContent = filesCache.length ? `(${filesCache.length})` : "";
+  const box = $("files"); box.innerHTML = "";
+  if (!list.length) {
+    const d = document.createElement("div"); d.className = "fempty";
+    d.textContent = filesCache.length ? "No files match your filter." : "No saved files yet. Format some JSON, name it, and click Save.";
+    box.appendChild(d); return;
+  }
+  list.forEach((f) => {
+    const row = document.createElement("div");
+    row.className = "frow" + (f.name === loadedName ? " active" : "");
+    row.title = `Open ${f.name}\nModified ${new Date(f.modified).toLocaleString()}`;
+    const n = document.createElement("span"); n.className = "fname"; n.textContent = f.name;
+    const m = document.createElement("span"); m.className = "fmeta"; m.textContent = `${fmtSize(f.size)} · ${fmtAgo(f.modified)}`;
+    const del = document.createElement("button"); del.className = "fdel"; del.textContent = "Delete"; del.title = "Delete this file";
+    del.onclick = (e) => { e.stopPropagation(); deleteFile(f.name); };
+    row.onclick = () => openFile(f.name);
+    row.append(n, m, del); box.appendChild(row);
+  });
+}
+async function openFile(name) {
+  input.value = await (await fetch("/api/files/" + encodeURIComponent(name))).text();
+  $("name").value = name.replace(/\.json$/, ""); loadedName = name; run(false); renderFiles();
+}
+async function deleteFile(name) {
+  if (!(await ask({ title: "Delete file?", text: `"${name}" will be removed from the save folder. This can't be undone.`, ok: "Delete", danger: true }))) return;
+  const r = await fetch("/api/files/" + encodeURIComponent(name), { method: "DELETE" });
+  if (!r.ok) return setStatus((await r.json()).error, "err");
+  if (loadedName === name) loadedName = null;
+  setStatus("Deleted " + name, "ok"); loadFiles();
+}
+$("fileFilter").addEventListener("input", renderFiles);
+
+async function doSave(name, content, overwrite) {
+  const r = await fetch("/api/save", { method: "POST", body: JSON.stringify({ name, content, overwrite }) });
+  const j = await r.json();
+  if (r.ok) { loadedName = j.saved; setStatus("Saved " + j.saved, "ok"); return loadFiles(); }
+  if (r.status === 409) {
+    const yes = await ask({ title: "File already exists", text: `"${j.name}" is already in the save folder.\nOverwrite it, or keep it and choose another name?`, ok: "Overwrite", cancel: "Choose another name", danger: true });
+    if (yes) return doSave(name, content, true);
+    $("name").focus(); $("name").select(); return setStatus("Not saved: file already exists. Pick another name.", "err");
+  }
+  setStatus(j.error, "err");
+}
+$("save").onclick = () => {
   const v = parse(); if (v === undefined) return;
   const name = $("name").value.trim();
   if (!name) return setStatus("Enter a file name", "err");
-  const content = JSON.stringify(v, null, indentVal());
-  const r = await fetch("/api/save", { method: "POST", body: JSON.stringify({ name, content }) });
-  const j = await r.json();
-  if (r.ok) { setStatus("Saved " + j.saved, "ok"); loadFiles(); } else setStatus(j.error, "err");
+  doSave(name, JSON.stringify(v, null, indentVal()), false);
 };
+$("name").addEventListener("keydown", (e) => { if (e.key === "Enter") $("save").click(); });
 async function changeDir(url, body) {
   const r = await fetch(url, { method: "POST", body: JSON.stringify(body || {}) });
   const j = await r.json();
@@ -346,7 +435,7 @@ $("pkUp").onclick = () => { if (pkCur && pkCur.parent) pkGo(pkCur.parent); };
 $("pkCancel").onclick = () => $("picker").close();
 $("pkSelect").onclick = async () => { $("picker").close(); await changeDir("/api/dir", { dir: pkCur.path }); loadInfo(); };
 $("pkNew").onclick = async () => {
-  const name = prompt("New folder name:"); if (!name) return;
+  const name = await ask({ title: "New folder", text: "Name of the new folder inside the current one:", ok: "Create", input: "" }); if (!name) return;
   const r = await fetch("/api/mkdir", { method: "POST", body: JSON.stringify({ parent: pkCur.path, name }) }), j = await r.json();
   if (!r.ok) { $("pkErr").textContent = j.error; return; }
   pkRender(j);

@@ -103,8 +103,21 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { dir: setSaveDir(dir) });
     }
     if (req.method === "GET" && req.url === "/api/files") {
-      const files = fs.readdirSync(SAVE_DIR).filter((f) => f.endsWith(".json")).sort();
+      const files = fs.readdirSync(SAVE_DIR)
+        .filter((f) => f.endsWith(".json"))
+        .map((name) => {
+          const st = fs.statSync(path.join(SAVE_DIR, name));
+          return { name, size: st.size, modified: st.mtimeMs };
+        })
+        .sort((a, b) => b.modified - a.modified); // newest first
       return send(res, 200, files);
+    }
+    if (req.method === "DELETE" && req.url.startsWith("/api/files/")) {
+      const name = safeName(decodeURIComponent(req.url.slice("/api/files/".length)));
+      const file = name && path.join(SAVE_DIR, name);
+      if (!file || !fs.existsSync(file)) return send(res, 404, { error: "Not found" });
+      fs.unlinkSync(file);
+      return send(res, 200, { deleted: name });
     }
     if (req.method === "GET" && req.url.startsWith("/api/files/")) {
       const name = safeName(decodeURIComponent(req.url.slice("/api/files/".length)));
@@ -113,11 +126,16 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, fs.readFileSync(file), "text/plain; charset=utf-8");
     }
     if (req.method === "POST" && req.url === "/api/save") {
-      const { name, content } = JSON.parse(await readBody(req));
+      const { name, content, overwrite } = JSON.parse(await readBody(req));
       const fileName = safeName(name);
       if (!fileName) return send(res, 400, { error: "Invalid file name" });
       JSON.parse(content); // refuse to save invalid JSON
-      fs.writeFileSync(path.join(SAVE_DIR, fileName), content);
+      const target = path.join(SAVE_DIR, fileName);
+      // Never replace an existing file unless the client explicitly says overwrite
+      if (!overwrite && fs.existsSync(target)) {
+        return send(res, 409, { error: `"${fileName}" already exists`, exists: true, name: fileName });
+      }
+      fs.writeFileSync(target, content, { flag: overwrite ? "w" : "wx" });
       return send(res, 200, { saved: fileName });
     }
     send(res, 404, { error: "Not found" });
