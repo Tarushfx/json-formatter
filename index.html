@@ -51,6 +51,11 @@
   .node text { fill:var(--fg); font:12px ui-monospace, Menlo, monospace; pointer-events:none; }
   .node.collapsed rect { fill:var(--panel); stroke-dasharray:4 2; }
   .node { cursor:pointer; }
+  dialog { background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:8px; width:min(560px, 92vw); padding:14px; }
+  dialog::backdrop { background:rgba(0,0,0,.4); }
+  #pkList { height:260px; overflow:auto; border:1px solid var(--border); border-radius:6px; background:var(--panel); }
+  #pkList div { padding:5px 10px; cursor:pointer; } #pkList div:hover { background:var(--border); }
+  #pkList .empty { color:var(--muted); cursor:default; } #pkList .empty:hover { background:none; }
   #pathBar { color:var(--muted); font:12px ui-monospace, Menlo, monospace; min-height:1.4em; }
 </style>
 </head>
@@ -94,8 +99,24 @@
   <label style="color:var(--muted);font-size:13px">Save folder</label>
   <input id="dirInput" size="46" placeholder="/path/to/folder or ~/Documents/json">
   <button id="setDir">Set folder</button>
-  <button id="pickDir" style="display:none">Browse…</button>
+  <button id="pickDir">Browse…</button>
+  <select id="recent" title="Recent folders" style="display:none"></select>
 </div>
+
+<dialog id="picker">
+  <div style="font-weight:600;margin-bottom:6px">Choose save folder</div>
+  <div class="row" style="margin:4px 0">
+    <button id="pkUp">↑ Up</button>
+    <code id="pkPath" style="word-break:break-all"></code>
+  </div>
+  <div id="pkList"></div>
+  <div class="row">
+    <button class="primary" id="pkSelect">Select this folder</button>
+    <button id="pkNew">New folder…</button>
+    <button id="pkCancel">Cancel</button>
+  </div>
+  <div id="pkErr" style="color:var(--err);min-height:1.2em"></div>
+</dialog>
 <div id="files"></div>
 
 <script>
@@ -287,11 +308,44 @@ async function changeDir(url, body) {
 }
 $("setDir").onclick = () => changeDir("/api/dir", { dir: $("dirInput").value });
 $("dirInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("setDir").click(); });
-$("pickDir").onclick = () => changeDir("/api/pick-dir");
-fetch("/api/info").then((r) => r.json()).then((i) => {
+/* in-page folder picker */
+let pkCur = null;
+function pkRender(j) {
+  pkCur = j; $("pkPath").textContent = j.path; $("pkUp").disabled = !j.parent;
+  const list = $("pkList"); list.innerHTML = "";
+  if (!j.dirs.length) { const d = document.createElement("div"); d.className = "empty"; d.textContent = "(no sub-folders)"; list.appendChild(d); }
+  j.dirs.forEach((name) => {
+    const d = document.createElement("div"); d.textContent = "📁 " + name;
+    d.onclick = () => pkGo(j.path + (j.path.endsWith("/") || j.path.endsWith("\\") ? "" : (j.path.includes("\\") ? "\\" : "/")) + name);
+    list.appendChild(d);
+  });
+}
+async function pkGo(p) {
+  const r = await fetch("/api/browse?path=" + encodeURIComponent(p)), j = await r.json();
+  if (!r.ok) { $("pkErr").textContent = j.error; return; }
+  $("pkErr").textContent = ""; pkRender(j);
+}
+$("pickDir").onclick = () => { $("picker").showModal(); pkGo($("dirInput").value || ""); };
+$("pkUp").onclick = () => { if (pkCur && pkCur.parent) pkGo(pkCur.parent); };
+$("pkCancel").onclick = () => $("picker").close();
+$("pkSelect").onclick = async () => { $("picker").close(); await changeDir("/api/dir", { dir: pkCur.path }); loadInfo(); };
+$("pkNew").onclick = async () => {
+  const name = prompt("New folder name:"); if (!name) return;
+  const r = await fetch("/api/mkdir", { method: "POST", body: JSON.stringify({ parent: pkCur.path, name }) }), j = await r.json();
+  if (!r.ok) { $("pkErr").textContent = j.error; return; }
+  pkRender(j);
+};
+
+/* recent folders */
+$("recent").onchange = () => { if ($("recent").value) changeDir("/api/dir", { dir: $("recent").value }).then(loadInfo); };
+async function loadInfo() {
+  const i = await (await fetch("/api/info")).json();
   $("dirInput").value = i.dir;
-  if (i.canPick) $("pickDir").style.display = "";
-});
+  const sel = $("recent"); sel.innerHTML = "<option value=''>Recent…</option>";
+  i.recent.forEach((d) => { const o = document.createElement("option"); o.value = d; o.textContent = d; sel.appendChild(o); });
+  sel.style.display = i.recent.length ? "" : "none";
+}
+loadInfo();
 loadFiles();
 </script>
 </body>

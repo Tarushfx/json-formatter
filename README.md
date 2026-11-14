@@ -37,8 +37,8 @@ npx github:Tarushfx/json-formatter --open
 
 Example: `json-formatter --dir ~/Documents/json --port 4000 --open`
 
-You can also change the save folder from the page (type a path and click **Set folder**, or **Browse…** on macOS).
-The choice is remembered in `~/.json-formatter.json`. Priority: `--dir` flag, then `$JSON_FORMATTER_DIR`, then the remembered folder, then `~/json-formatter-data`.
+You can also change the save folder from the page: type a path and click **Set folder**, click **Browse…** to pick a folder (with a **New folder…** option), or choose from **Recent…**. This works on macOS, Windows and Linux.
+The choice and the last 8 folders are remembered in `~/.json-formatter.json`. Priority: `--dir` flag, then `$JSON_FORMATTER_DIR`, then the remembered folder, then `~/json-formatter-data`.
 
 ## Notes
 
