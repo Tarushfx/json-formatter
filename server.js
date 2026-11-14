@@ -21,9 +21,37 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 }
 
 const PORT = Number(arg("port") || process.env.PORT || 3000);
-const rawDir = arg("dir") || process.env.JSON_FORMATTER_DIR || path.join(os.homedir(), "json-formatter-data");
-const SAVE_DIR = path.resolve(rawDir.replace(/^~(?=$|\/|\\)/, os.homedir()));
+const CONFIG_FILE = path.join(os.homedir(), ".json-formatter.json");
+function readConfig() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")); } catch { return {}; }
+}
+function resolveDir(p) {
+  return path.resolve(String(p).trim().replace(/^~(?=$|\/|\\)/, os.homedir()));
+}
+// Priority: --dir flag > $JSON_FORMATTER_DIR > folder chosen in the UI (remembered) > default
+let SAVE_DIR = resolveDir(
+  arg("dir") || process.env.JSON_FORMATTER_DIR || readConfig().dir || path.join(os.homedir(), "json-formatter-data")
+);
 fs.mkdirSync(SAVE_DIR, { recursive: true });
+
+function setSaveDir(p) {
+  const dir = resolveDir(p);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.accessSync(dir, fs.constants.W_OK);
+  SAVE_DIR = dir;
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ dir }, null, 2));
+  return dir;
+}
+
+// Native folder picker (macOS only)
+function pickFolderMac() {
+  return new Promise((resolve, reject) => {
+    exec(`osascript -e 'POSIX path of (choose folder with prompt "Choose a folder to save JSON files")'`, (err, out) => {
+      if (err) return reject(new Error("No folder chosen"));
+      resolve(out.trim());
+    });
+  });
+}
 
 function send(res, code, body, type = "application/json") {
   res.writeHead(code, { "Content-Type": type });
@@ -54,7 +82,17 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/") {
       return send(res, 200, fs.readFileSync(path.join(__dirname, "index.html")), "text/html");
     }
-    if (req.method === "GET" && req.url === "/api/info") return send(res, 200, { dir: SAVE_DIR });
+    if (req.method === "GET" && req.url === "/api/info") {
+      return send(res, 200, { dir: SAVE_DIR, canPick: process.platform === "darwin" });
+    }
+    if (req.method === "POST" && req.url === "/api/dir") {
+      const { dir } = JSON.parse(await readBody(req));
+      if (!dir || !String(dir).trim()) return send(res, 400, { error: "Enter a folder path" });
+      return send(res, 200, { dir: setSaveDir(dir) });
+    }
+    if (req.method === "POST" && req.url === "/api/pick-dir") {
+      return send(res, 200, { dir: setSaveDir(await pickFolderMac()) });
+    }
     if (req.method === "GET" && req.url === "/api/files") {
       const files = fs.readdirSync(SAVE_DIR).filter((f) => f.endsWith(".json")).sort();
       return send(res, 200, files);

@@ -89,7 +89,12 @@
 <div class="row">
   <input id="name" placeholder="file name (e.g. data)" size="24">
   <button id="save">Save to folder</button>
-  <span id="dir" style="color:var(--muted);font-size:13px"></span>
+</div>
+<div class="row">
+  <label style="color:var(--muted);font-size:13px">Save folder</label>
+  <input id="dirInput" size="46" placeholder="/path/to/folder or ~/Documents/json">
+  <button id="setDir">Set folder</button>
+  <button id="pickDir" style="display:none">Browse…</button>
 </div>
 <div id="files"></div>
 
@@ -274,7 +279,19 @@ $("save").onclick = async () => {
   const j = await r.json();
   if (r.ok) { setStatus("Saved " + j.saved, "ok"); loadFiles(); } else setStatus(j.error, "err");
 };
-fetch("/api/info").then((r) => r.json()).then((i) => $("dir").textContent = "→ " + i.dir);
+async function changeDir(url, body) {
+  const r = await fetch(url, { method: "POST", body: JSON.stringify(body || {}) });
+  const j = await r.json();
+  if (!r.ok) return setStatus(j.error, "err");
+  $("dirInput").value = j.dir; setStatus("Save folder: " + j.dir, "ok"); loadFiles();
+}
+$("setDir").onclick = () => changeDir("/api/dir", { dir: $("dirInput").value });
+$("dirInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("setDir").click(); });
+$("pickDir").onclick = () => changeDir("/api/pick-dir");
+fetch("/api/info").then((r) => r.json()).then((i) => {
+  $("dirInput").value = i.dir;
+  if (i.canPick) $("pickDir").style.display = "";
+});
 loadFiles();
 </script>
 </body>
