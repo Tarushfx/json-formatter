@@ -51,6 +51,10 @@
   .node text { fill:var(--fg); font:12px ui-monospace, Menlo, monospace; pointer-events:none; }
   .node.collapsed rect { fill:var(--panel); stroke-dasharray:4 2; }
   .node { cursor:pointer; }
+  .node .expbtn rect { fill:var(--panel); stroke:var(--border); stroke-width:1; }
+  .node .expbtn:hover rect { fill:var(--accent); }
+  .node .expbtn text { pointer-events:auto; font-size:12px; }
+  .expAll { cursor:pointer; color:var(--accent); margin-left:6px; }
   dialog { background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:8px; width:min(560px, 92vw); padding:14px; }
   dialog::backdrop { background:rgba(0,0,0,.4); }
   #pkList { height:260px; overflow:auto; border:1px solid var(--border); border-radius:6px; background:var(--panel); }
@@ -175,13 +179,15 @@ function treeNode(key, v, depth) {
   const entries = k === "array" ? v.map((x, i) => [i, x]) : Object.entries(v);
   const d = document.createElement("details"); d.open = depth < 2;
   const s = document.createElement("summary");
-  s.innerHTML = label + `<span class="cnt">${k === "array" ? `[${entries.length}]` : `{${entries.length}}`}</span>`;
+  s.innerHTML = label + `<span class="cnt">${k === "array" ? `[${entries.length}]` : `{${entries.length}}`}</span> <span class="expAll" title="Expand everything under this node">⤢</span>`;
+  s.querySelector(".expAll").onclick = (e) => { e.preventDefault(); e.stopPropagation(); d._expandAll(); };
   d.appendChild(s);
   const kids = document.createElement("div"); kids.className = "kids";
   let filled = false;
   const fill = () => { if (filled) return; filled = true; entries.forEach(([ck, cv]) => kids.appendChild(treeNode(ck, cv, depth + 1))); };
   if (d.open) fill();
   d.addEventListener("toggle", () => { if (d.open) fill(); });
+  d._expandAll = () => { d.open = true; fill(); kids.querySelectorAll(":scope > details").forEach((c) => c._expandAll()); };
   d.appendChild(kids); return d;
 }
 function renderTree(v) { const t = $("treeView"); t.innerHTML = ""; t.appendChild(treeNode(null, v, 0)); }
@@ -215,7 +221,7 @@ function nodeLabel(n) {
   if (n.kind === "object") s = `${key} {${n.count}}`;
   else if (n.kind === "array") s = `${key} [${n.count}]`;
   else s = `${key}: ${n.kind === "string" ? JSON.stringify(n.value) : String(n.value)}`;
-  const max = 28; return s.length > max ? s.slice(0, max - 1) + "…" : s;
+  const max = n.children.length ? 21 : 27; return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 function el(name, attrs) { const e = document.createElementNS(SVGNS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
 
@@ -232,8 +238,18 @@ function drawGraph() {
     });
     const g = el("g", { class: `node ${n.kind}${n.collapsed ? " collapsed" : ""}`, transform: `translate(${n.x},${n.y})` });
     g.appendChild(el("rect", { width: NW, height: NH }));
-    const t = el("text", { x: 8, y: NH / 2 + 4 }); t.textContent = nodeLabel(n) + (n.collapsed ? "  ＋" : "");
+    const t = el("text", { x: 8, y: NH / 2 + 4 }); t.textContent = nodeLabel(n);
     g.appendChild(t);
+    if (n.children.length) {
+      const ex = el("g", { class: "expbtn", transform: `translate(${NW - 20},3)` });
+      ex.appendChild(el("rect", { width: 18, height: NH - 6, rx: 4 }));
+      const tt = el("text", { x: 4, y: 14 }); tt.textContent = "⤢";
+      const title = el("title", {}); title.textContent = "Expand everything under this node";
+      ex.append(tt, title);
+      ex.addEventListener("click", (e) => { e.stopPropagation(); if (dragMoved) return; setAll(n, false); drawGraph(); });
+      ex.addEventListener("mousedown", (e) => e.stopPropagation());
+      g.appendChild(ex);
+    }
     g.addEventListener("mouseenter", () => $("pathBar").textContent = n.path || "$");
     g.addEventListener("click", (e) => { if (dragMoved) return; if (n.children.length) { n.collapsed = !n.collapsed; drawGraph(); } });
     nodes.appendChild(g);
